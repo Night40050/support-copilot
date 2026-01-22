@@ -57,6 +57,8 @@ class LLMService:
             "do_sample": False,
         }
 
+        self.mock = os.getenv("MOCK_LLM", "false").lower() == "true"
+
         self._llm = HuggingFaceHub(
             repo_id=model_repo,
             huggingfacehub_api_token=token,
