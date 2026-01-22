@@ -1,13 +1,18 @@
 import logging
+import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from fastapi import APIRouter, Body, Depends, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.models import TicketProcessRequest, TicketProcessResponse
-from app.services.llm_service import LLMService
+from app.services.llm_service import (
+    LLMService,
+    LLMServiceError,
+    MockLLMService,
+)
 from app.services.supabase_service import (
     SupabaseService,
     SupabaseServiceError,
@@ -18,14 +23,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["tickets"])
 
 
-def get_llm_service() -> LLMService:
-    """Dependencia para el servicio LLM."""
-    return LLMService()
+def get_llm_service() -> Union[LLMService, MockLLMService]:
+    """Dependencia para el servicio LLM. Con MOCK_LLM=true no se usa Hugging Face."""
+    if os.getenv("MOCK_LLM", "").lower() == "true":
+        return MockLLMService()
+    try:
+        return LLMService()
+    except Exception as exc:
+        logger.exception("LLM service init failed: %s", exc)
+        raise
 
 
 def get_supabase_service() -> SupabaseService:
     """Dependencia para el servicio de Supabase."""
-    return SupabaseService()
+    try:
+        return SupabaseService()
+    except Exception as exc:
+        logger.exception("Supabase service init failed: %s", exc)
+        raise
 
 
 def _response(
@@ -45,42 +60,59 @@ def _response(
 @router.post("/process-ticket")
 def process_ticket(
     payload: Dict[str, Any] = Body(...),
-    llm_service: LLMService = Depends(get_llm_service),
+    llm_service: Union[LLMService, MockLLMService] = Depends(get_llm_service),
     supabase_service: SupabaseService = Depends(get_supabase_service),
 ) -> Dict[str, Any]:
-    """Procesa un ticket con IA y persiste resultados en Supabase."""
+    """Procesa un ticket con IA, clasifica categoría/sentimiento y persiste en Supabase."""
+    t0 = time.perf_counter()
+    ticket_id_raw = payload.get("ticket_id", "unknown")
+
     try:
         request_data = TicketProcessRequest(**payload)
     except ValidationError as exc:
-        logger.info("Entrada inválida para process-ticket: %s", exc)
+        logger.error("Validation failed for ticket %s: %s", ticket_id_raw, exc.errors())
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content=_response(
                 "error",
                 "Entrada inválida.",
                 data=None,
-                errors=[str(exc)],
+                errors=[str(e) for e in exc.errors()],
             ),
         )
 
-    start_time = time.perf_counter()
+    logger.info("Processing ticket: %s", request_data.ticket_id)
 
+    t_llm = time.perf_counter()
     try:
         llm_result: TicketProcessResponse = llm_service.classify_ticket(
             request_data.description
         )
-        processing_time_ms = int((time.perf_counter() - start_time) * 1000)
+    except LLMServiceError as exc:
+        logger.error("LLM error for ticket %s: %s", request_data.ticket_id, exc)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=_response(
+                "error",
+                "Error al clasificar el ticket con IA.",
+                data=None,
+                errors=[str(exc)],
+            ),
+        )
+    llm_ms = int((time.perf_counter() - t_llm) * 1000)
 
+    t_supabase = time.perf_counter()
+    try:
         supabase_service.update_ticket_by_id(
             ticket_id=request_data.ticket_id,
             category=llm_result.category,
             sentiment=llm_result.sentiment,
             confidence_score=llm_result.confidence_score,
             reasoning=llm_result.reasoning,
-            processing_time_ms=processing_time_ms,
+            processing_time_ms=llm_ms,
         )
     except SupabaseServiceError as exc:
-        logger.exception("Error al actualizar ticket en Supabase.")
+        logger.error("Supabase error for ticket %s: %s", request_data.ticket_id, exc)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=_response(
@@ -90,8 +122,8 @@ def process_ticket(
                 errors=[str(exc)],
             ),
         )
-    except Exception as exc:  # pragma: no cover - error inesperado
-        logger.exception("Error al procesar el ticket.")
+    except Exception as exc:
+        logger.exception("Unexpected error updating ticket %s", request_data.ticket_id)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=_response(
@@ -101,10 +133,21 @@ def process_ticket(
                 errors=[str(exc)],
             ),
         )
+    supabase_ms = (time.perf_counter() - t_supabase) * 1000
+    total_ms = (time.perf_counter() - t0) * 1000
 
+    logger.info(
+        "Ticket %s processed: %s / %s (%.2fms total, LLM %.0fms, Supabase %.0fms)",
+        request_data.ticket_id,
+        llm_result.category,
+        llm_result.sentiment,
+        total_ms,
+        llm_ms,
+        supabase_ms,
+    )
     return _response(
         "success",
         "Ticket procesado correctamente.",
-        data=llm_result.dict(),
+        data=llm_result.model_dump(mode="json"),
         errors=None,
     )

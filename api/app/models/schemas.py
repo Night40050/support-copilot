@@ -1,6 +1,8 @@
-from typing import Literal
+"""Schemas Pydantic para validación de datos."""
 
 from pydantic import BaseModel, Field, StrictFloat, StrictStr, UUID4
+
+from app.models.enums import SentimentType, TicketCategory
 
 
 class TicketProcessRequest(BaseModel):
@@ -13,7 +15,7 @@ class TicketProcessRequest(BaseModel):
 class TicketProcessResponse(BaseModel):
     """Respuesta estructurada del análisis de IA para un ticket."""
 
-    category: Literal["Técnico", "Facturación", "Comercial", "Otro"]
-    sentiment: Literal["Positivo", "Neutral", "Negativo"]
+    category: TicketCategory
+    sentiment: SentimentType
     confidence_score: StrictFloat = Field(..., ge=0, le=1)
     reasoning: StrictStr = Field(..., max_length=300)
