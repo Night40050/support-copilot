@@ -5,19 +5,24 @@ Sistema de tickets con IA que recibe solicitudes de soporte, las procesa
 mediante agentes de lenguaje para categorizarlas y analizar su sentimiento, y
 las visualiza en tiempo real en un dashboard.
 
-## Arquitectura
-Frontend → Supabase → n8n → Python API
-
-## URLs en Producción
-- Dashboard: [Pendiente deploy]
-- Python API: [Pendiente deploy]
-
 ## Tech Stack
-- React
-- Python
+- Python 3.11
 - FastAPI
+- LangChain
+- HuggingFace / Mock LLM
 - Supabase
-- n8n
+- Docker
+- Render
+
+## Endpoints
+- POST /process-ticket
+- GET /health
+
+## Deployment
+Deployed on Render using Docker.
+
+## URL
+- Python API: https://support-copilot-owbl.onrender.com/docs
 
 ## Estructura del Proyecto
 ```
@@ -37,13 +42,4 @@ Frontend → Supabase → n8n → Python API
 │   ├── Dockerfile
 │   ├── main.py
 │   └── requirements.txt
-├── frontend
-│   └── README.md
-├── n8n
-│   └── README.md
-├── supabase
-│   ├── README.md
-│   └── setup.sql
-└── README.md
-```
 
